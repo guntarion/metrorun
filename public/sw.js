@@ -2,7 +2,7 @@
 // Precaches the app shell + beat sound files so the metronome still works
 // mid-run with no signal, and serves static assets cache-first afterwards.
 
-const CACHE_VERSION = "metrorun-v1";
+const CACHE_VERSION = "metrorun-v2";
 
 const PRECACHE_URLS = [
   "/",
@@ -16,6 +16,7 @@ const PRECACHE_URLS = [
   "/sounds/tok.mp3",
   "/sounds/tik2.mp3",
   "/sounds/tak2.mp3",
+  "/sounds/keepalive.mp3",
 ];
 
 self.addEventListener("install", (event) => {

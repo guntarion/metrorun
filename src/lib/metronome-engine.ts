@@ -5,17 +5,26 @@
  * - Timing uses the classic "lookahead scheduler" pattern: a JS timer wakes up
  *   often and schedules upcoming beats on the Web Audio clock (AudioContext.currentTime),
  *   which is sample-accurate and keeps ticking independent of JS timer jitter.
- * - Output is routed through a MediaStreamAudioDestinationNode into a hidden
- *   <audio> element (instead of straight to audioCtx.destination). iOS Safari
- *   grants background playback to pages that are actively playing through an
- *   HTMLMediaElement from a user gesture — this is the same mechanism that lets
- *   web radio/music players keep playing with the screen locked. A bare
- *   AudioContext with no <audio> element is far more likely to be suspended
- *   the moment the screen locks.
+ * - Beat audio is connected straight to `audioContext.destination`. That's the
+ *   native Web Audio render path, driven by the hardware's own audio clock on
+ *   a dedicated render thread — once a beat is scheduled with `start(time)`,
+ *   its playback timing no longer depends on the JS main thread at all.
+ * - A *separate* hidden <audio> element loops a real (tiny, near-silent) audio
+ *   FILE purely to hold iOS's "this page is playing background media"
+ *   permission, which is what stops Safari from fully suspending the page
+ *   when the screen locks. This element is intentionally NOT part of the beat
+ *   audio graph: an earlier version routed the actual beats through a
+ *   MediaStreamAudioDestinationNode into this same element, but a live
+ *   MediaStream and the AudioContext's internal clock are two independent
+ *   clock domains — under background CPU throttling they drift apart and the
+ *   <audio> element's playback has to skip/stretch samples to resync, which
+ *   is exactly what produced the reported "chaotic tempo" once backgrounded.
+ *   Keeping them separate means the audible metronome never depends on that
+ *   resync behavior.
  * - BPM/sound/mode changes are applied to the *next unscheduled* beat only, so
  *   changing tempo on the fly never retroactively touches beats already
  *   committed to the audio graph (no glitches), and takes effect within one
- *   scheduling window (~0.5s).
+ *   scheduling window.
  * - If the JS timer stalls for a while (backgrounding, a phone call, etc.) the
  *   scheduler self-heals by fast-forwarding the beat grid instead of trying to
  *   flush a backlog of overdue beats.
@@ -30,6 +39,8 @@ export const SOUND_FILES: Record<BeatSoundId, string> = {
   tik2: "/sounds/tik2.mp3",
   tak2: "/sounds/tak2.mp3",
 };
+
+const KEEPALIVE_URL = "/sounds/keepalive.mp3";
 
 export type SoundPackId = "click" | "classic" | "sharp";
 
@@ -72,17 +83,17 @@ interface EngineOptions {
   onError?: (message: string) => void;
 }
 
-const SCHEDULE_AHEAD_TIME = 0.5; // seconds of lookahead scheduled each tick
+const SCHEDULE_AHEAD_TIME = 0.75; // seconds of lookahead scheduled each tick
 const SCHEDULER_INTERVAL_MS = 100; // how often the scheduler wakes up
 const MAX_CATCHUP_BEHIND = 1.0; // if we fall this far behind, fast-forward the grid
 
 export class MetronomeEngine {
   private audioCtx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
-  private streamDest: MediaStreamAudioDestinationNode | null = null;
-  private audioEl: HTMLAudioElement | null = null;
+  private keepAliveEl: HTMLAudioElement | null = null;
   private buffers = new Map<BeatSoundId, AudioBuffer>();
   private loadingPromise: Promise<void> | null = null;
+  private visibilityBound = false;
 
   private bpm = 160;
   private soundPack: SoundPackId = "click";
@@ -113,28 +124,40 @@ export class MetronomeEngine {
 
     const gain = ctx.createGain();
     gain.gain.value = this.volume;
+    gain.connect(ctx.destination);
     this.masterGain = gain;
 
-    const dest = ctx.createMediaStreamDestination();
-    gain.connect(dest);
-    this.streamDest = dest;
-
-    const audioEl = new Audio();
-    audioEl.srcObject = dest.stream;
-    audioEl.autoplay = true;
-    audioEl.setAttribute("playsinline", "true");
-    audioEl.muted = false;
-    // Safety net: if the OS pauses our stream element (interruption, etc.)
-    // while we're supposed to be running, try to resume it.
-    audioEl.addEventListener("pause", () => {
-      if (this.running) {
-        audioEl.play().catch(() => {});
-      }
+    // Keep-alive element: a real looped file, independent of the Web Audio
+    // graph above, whose only job is to keep iOS treating this page as
+    // "playing media" so it isn't fully suspended in the background.
+    const keepAlive = new Audio(KEEPALIVE_URL);
+    keepAlive.loop = true;
+    keepAlive.setAttribute("playsinline", "true");
+    keepAlive.addEventListener("pause", () => {
+      if (this.running) keepAlive.play().catch(() => {});
     });
-    this.audioEl = audioEl;
+    this.keepAliveEl = keepAlive;
+
+    if (!this.visibilityBound) {
+      this.visibilityBound = true;
+      document.addEventListener("visibilitychange", this.handleWake);
+      window.addEventListener("pageshow", this.handleWake);
+      window.addEventListener("focus", this.handleWake);
+    }
 
     return ctx;
   }
+
+  /** Re-assert playback state after coming back from background/lock. */
+  private handleWake = () => {
+    if (!this.running) return;
+    if (this.audioCtx?.state === "suspended") {
+      this.audioCtx.resume().catch(() => {});
+    }
+    if (this.keepAliveEl?.paused) {
+      this.keepAliveEl.play().catch(() => {});
+    }
+  };
 
   async loadSounds(): Promise<void> {
     if (this.loadingPromise) return this.loadingPromise;
@@ -221,9 +244,7 @@ export class MetronomeEngine {
       this.beatIndex += 1;
     }
 
-    if (ctx.state === "suspended") {
-      ctx.resume().catch(() => {});
-    }
+    this.handleWake();
 
     this.timerId = window.setTimeout(this.tick, SCHEDULER_INTERVAL_MS);
   };
@@ -250,11 +271,8 @@ export class MetronomeEngine {
       const ctx = this.ensureContext();
       await this.loadSounds();
       if (ctx.state === "suspended") await ctx.resume();
-      if (this.audioEl) {
-        await this.audioEl.play().catch(() => {
-          // Some browsers reject play() until the stream has data; the
-          // element is already wired to autoplay so this is best-effort.
-        });
+      if (this.keepAliveEl) {
+        await this.keepAliveEl.play().catch(() => {});
       }
 
       this.running = true;
@@ -286,17 +304,24 @@ export class MetronomeEngine {
       window.clearTimeout(this.timerId);
       this.timerId = null;
     }
+    this.keepAliveEl?.pause();
     if ("mediaSession" in navigator) {
       navigator.mediaSession.playbackState = "paused";
     }
     this.options.onRunningChange?.(false);
-    // The AudioContext / <audio> element are kept alive (not closed) so the
-    // next start() is instant and doesn't need another user-gesture unlock.
+    // The AudioContext is kept alive (not closed) so the next start() is
+    // instant and doesn't need another user-gesture unlock.
   }
 
   destroy() {
     this.stop();
-    this.audioEl?.pause();
+    if (this.visibilityBound) {
+      document.removeEventListener("visibilitychange", this.handleWake);
+      window.removeEventListener("pageshow", this.handleWake);
+      window.removeEventListener("focus", this.handleWake);
+      this.visibilityBound = false;
+    }
+    this.keepAliveEl?.pause();
     this.audioCtx?.close().catch(() => {});
   }
 }
