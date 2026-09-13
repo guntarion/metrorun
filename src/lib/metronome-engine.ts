@@ -1,33 +1,37 @@
 /**
  * Core metronome audio engine.
  *
- * Design notes (why it's built this way):
- * - Timing uses the classic "lookahead scheduler" pattern: a JS timer wakes up
- *   often and schedules upcoming beats on the Web Audio clock (AudioContext.currentTime),
- *   which is sample-accurate and keeps ticking independent of JS timer jitter.
- * - Beat audio is connected straight to `audioContext.destination`. That's the
- *   native Web Audio render path, driven by the hardware's own audio clock on
- *   a dedicated render thread — once a beat is scheduled with `start(time)`,
- *   its playback timing no longer depends on the JS main thread at all.
- * - A *separate* hidden <audio> element loops a real (tiny, near-silent) audio
- *   FILE purely to hold iOS's "this page is playing background media"
- *   permission, which is what stops Safari from fully suspending the page
- *   when the screen locks. This element is intentionally NOT part of the beat
- *   audio graph: an earlier version routed the actual beats through a
- *   MediaStreamAudioDestinationNode into this same element, but a live
- *   MediaStream and the AudioContext's internal clock are two independent
- *   clock domains — under background CPU throttling they drift apart and the
- *   <audio> element's playback has to skip/stretch samples to resync, which
- *   is exactly what produced the reported "chaotic tempo" once backgrounded.
- *   Keeping them separate means the audible metronome never depends on that
- *   resync behavior.
- * - BPM/sound/mode changes are applied to the *next unscheduled* beat only, so
- *   changing tempo on the fly never retroactively touches beats already
- *   committed to the audio graph (no glitches), and takes effect within one
- *   scheduling window.
- * - If the JS timer stalls for a while (backgrounding, a phone call, etc.) the
- *   scheduler self-heals by fast-forwarding the beat grid instead of trying to
- *   flush a backlog of overdue beats.
+ * Design notes (why it's built this way — two earlier designs failed on a
+ * real iPhone and are worth recording so nobody re-tries them):
+ *
+ * 1. First attempt: a live Web Audio lookahead scheduler connected straight
+ *    to `audioContext.destination`. Sample-accurate, but iOS only keeps a
+ *    page's JS/audio processing alive in the background if the *actual*
+ *    audible output is a playing HTMLMediaElement. A bare AudioContext with
+ *    no media element gets suspended the moment the screen locks — the beat
+ *    stopped entirely.
+ * 2. Second attempt: kept the live scheduler, but routed it through a
+ *    `MediaStreamAudioDestinationNode` into a hidden `<audio>` element so
+ *    *something* playing counted as "now playing" media. That kept the page
+ *    alive, but a live MediaStream has its own clock, independent from the
+ *    AudioContext's internal clock. Under background CPU throttling the two
+ *    drift apart and the element has to skip/stretch samples to resync —
+ *    audible as a chaotic, randomly-shifting tempo.
+ *
+ * The design that actually holds up: don't stream anything live. Render the
+ * whole beat pattern (many bars' worth, so any loop-seam is rare) offline
+ * into one real WAV file with `OfflineAudioContext`, and hand that file to a
+ * normal `<audio loop>` element. There is exactly one clock involved — the
+ * browser's native media pipeline looping a static file, the same mechanism
+ * every music/podcast site relies on for gapless background playback. No JS
+ * timer needs to run at all once playback starts, so background throttling
+ * can't touch its timing, and it *is* the audible output, so iOS has no
+ * reason to suspend it.
+ *
+ * The trade-off: changing BPM/sound/mode on the fly re-renders the loop and
+ * swaps it in, which causes a brief (roughly one render cycle) restart click
+ * — acceptable since it only happens on an explicit user action, same as
+ * changing tempo on a physical metronome.
  */
 
 export type BeatSoundId = "click" | "tik" | "tok" | "tik2" | "tak2";
@@ -39,8 +43,6 @@ export const SOUND_FILES: Record<BeatSoundId, string> = {
   tik2: "/sounds/tik2.mp3",
   tak2: "/sounds/tak2.mp3",
 };
-
-const KEEPALIVE_URL = "/sounds/keepalive.mp3";
 
 export type SoundPackId = "click" | "classic" | "sharp";
 
@@ -78,32 +80,78 @@ export const MIN_BPM = 40;
 export const MAX_BPM = 240;
 
 interface EngineOptions {
-  onBeat?: (beatIndex: number, side: "left" | "right") => void;
   onRunningChange?: (running: boolean) => void;
   onError?: (message: string) => void;
 }
 
-const SCHEDULE_AHEAD_TIME = 0.75; // seconds of lookahead scheduled each tick
-const SCHEDULER_INTERVAL_MS = 100; // how often the scheduler wakes up
-const MAX_CATCHUP_BEHIND = 1.0; // if we fall this far behind, fast-forward the grid
+const SAMPLE_RATE = 44100;
+// How many beats get baked into one loop. Larger = any loop-seam artifact
+// happens less often, at the cost of a slightly bigger render/file. Render
+// cost is trivial even at this size, so we bias toward "rare seams".
+const LOOP_BEATS = 32;
+// Debounce for on-the-fly changes (BPM +/- held down, quick pack switching)
+// so we don't re-render and restart the loop on every single tick.
+const REBUILD_DEBOUNCE_MS = 180;
+
+/** Minimal 16-bit PCM WAV encoder — turns a rendered AudioBuffer into a
+ * real file `<audio loop>` can play natively (gapless, no JS involved). */
+function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const bytesPerSample = 2;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataSize = buffer.length * blockAlign;
+
+  const arrayBuffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(arrayBuffer);
+
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  const channels: Float32Array[] = [];
+  for (let ch = 0; ch < numChannels; ch++) channels.push(buffer.getChannelData(ch));
+
+  let offset = 44;
+  for (let i = 0; i < buffer.length; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const clamped = Math.max(-1, Math.min(1, channels[ch][i]));
+      view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+      offset += 2;
+    }
+  }
+
+  return new Blob([arrayBuffer], { type: "audio/wav" });
+}
 
 export class MetronomeEngine {
-  private audioCtx: AudioContext | null = null;
-  private masterGain: GainNode | null = null;
-  private keepAliveEl: HTMLAudioElement | null = null;
+  private audioEl: HTMLAudioElement | null = null;
+  private decodeCtx: OfflineAudioContext | null = null;
   private buffers = new Map<BeatSoundId, AudioBuffer>();
   private loadingPromise: Promise<void> | null = null;
+  private currentLoopUrl: string | null = null;
+  private rebuildTimer: number | null = null;
+  private rebuildToken = 0;
   private visibilityBound = false;
 
   private bpm = 160;
   private soundPack: SoundPackId = "click";
   private beatMode: BeatMode = "same";
   private volume = 1;
-
-  private timerId: number | null = null;
-  private nextBeatTime = 0;
-  private beatIndex = 0;
-  private startTime = 0;
   private running = false;
 
   constructor(private options: EngineOptions = {}) {}
@@ -112,31 +160,21 @@ export class MetronomeEngine {
     return this.running;
   }
 
-  private ensureContext(): AudioContext {
-    if (this.audioCtx) return this.audioCtx;
-
-    const Ctor =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
-    const ctx = new Ctor();
-    this.audioCtx = ctx;
-
-    const gain = ctx.createGain();
-    gain.gain.value = this.volume;
-    gain.connect(ctx.destination);
-    this.masterGain = gain;
-
-    // Keep-alive element: a real looped file, independent of the Web Audio
-    // graph above, whose only job is to keep iOS treating this page as
-    // "playing media" so it isn't fully suspended in the background.
-    const keepAlive = new Audio(KEEPALIVE_URL);
-    keepAlive.loop = true;
-    keepAlive.setAttribute("playsinline", "true");
-    keepAlive.addEventListener("pause", () => {
-      if (this.running) keepAlive.play().catch(() => {});
+  private ensureAudioElement(): HTMLAudioElement {
+    if (this.audioEl) return this.audioEl;
+    const el = document.createElement("audio");
+    el.loop = true;
+    el.setAttribute("playsinline", "true");
+    el.style.display = "none";
+    el.volume = this.volume;
+    el.addEventListener("pause", () => {
+      if (this.running) el.play().catch(() => {});
     });
-    this.keepAliveEl = keepAlive;
+    // Genuinely attached to the DOM (not just JS-referenced) — some iOS
+    // Safari versions are more reliable about not tearing down a media
+    // element's background-audio grant when it's part of the document.
+    document.body.appendChild(el);
+    this.audioEl = el;
 
     if (!this.visibilityBound) {
       this.visibilityBound = true;
@@ -144,24 +182,21 @@ export class MetronomeEngine {
       window.addEventListener("pageshow", this.handleWake);
       window.addEventListener("focus", this.handleWake);
     }
-
-    return ctx;
+    return el;
   }
 
-  /** Re-assert playback state after coming back from background/lock. */
+  /** Re-assert playback after coming back from background/lock/interruption. */
   private handleWake = () => {
-    if (!this.running) return;
-    if (this.audioCtx?.state === "suspended") {
-      this.audioCtx.resume().catch(() => {});
-    }
-    if (this.keepAliveEl?.paused) {
-      this.keepAliveEl.play().catch(() => {});
-    }
+    if (!this.running || !this.audioEl) return;
+    if (this.audioEl.paused) this.audioEl.play().catch(() => {});
   };
 
   async loadSounds(): Promise<void> {
     if (this.loadingPromise) return this.loadingPromise;
-    const ctx = this.ensureContext();
+    if (!this.decodeCtx) {
+      this.decodeCtx = new OfflineAudioContext(1, 1, SAMPLE_RATE);
+    }
+    const decodeCtx = this.decodeCtx;
     this.loadingPromise = (async () => {
       const entries = Object.entries(SOUND_FILES) as [BeatSoundId, string][];
       await Promise.all(
@@ -169,7 +204,7 @@ export class MetronomeEngine {
           const res = await fetch(url);
           if (!res.ok) throw new Error(`Gagal memuat suara: ${url}`);
           const arrayBuffer = await res.arrayBuffer();
-          const buffer = await ctx.decodeAudioData(arrayBuffer);
+          const buffer = await decodeCtx.decodeAudioData(arrayBuffer);
           this.buffers.set(id, buffer);
         }),
       );
@@ -179,20 +214,26 @@ export class MetronomeEngine {
 
   setVolume(v: number) {
     this.volume = Math.min(1, Math.max(0, v));
-    if (this.masterGain) this.masterGain.gain.value = this.volume;
+    if (this.audioEl) this.audioEl.volume = this.volume;
   }
 
   setBpm(bpm: number) {
-    this.bpm = Math.min(MAX_BPM, Math.max(MIN_BPM, Math.round(bpm)));
-    this.refreshMediaSessionMetadata();
+    const next = Math.min(MAX_BPM, Math.max(MIN_BPM, Math.round(bpm)));
+    if (next === this.bpm) return;
+    this.bpm = next;
+    this.scheduleRebuild();
   }
 
   setSoundPack(pack: SoundPackId) {
+    if (pack === this.soundPack) return;
     this.soundPack = pack;
+    this.scheduleRebuild();
   }
 
   setBeatMode(mode: BeatMode) {
+    if (mode === this.beatMode) return;
     this.beatMode = mode;
+    this.scheduleRebuild();
   }
 
   private secondsPerBeat() {
@@ -205,49 +246,56 @@ export class MetronomeEngine {
     return index % 2 === 0 ? pack.even : pack.odd;
   }
 
-  private scheduleBeat(index: number, time: number) {
-    const ctx = this.audioCtx;
-    const gain = this.masterGain;
-    if (!ctx || !gain) return;
-    const soundId = this.soundForBeat(index);
-    const buffer = this.buffers.get(soundId);
-    if (!buffer) return;
+  /** Render the current settings into one seamless looping WAV buffer. */
+  private async buildLoopBuffer(): Promise<AudioBuffer> {
+    const spb = this.secondsPerBeat();
+    const totalSamples = Math.round(LOOP_BEATS * spb * SAMPLE_RATE);
+    const offlineCtx = new OfflineAudioContext(1, totalSamples, SAMPLE_RATE);
 
-    const src = ctx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(gain);
-    src.start(time);
+    for (let i = 0; i < LOOP_BEATS; i++) {
+      const buffer = this.buffers.get(this.soundForBeat(i));
+      if (!buffer) continue;
+      const src = offlineCtx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(offlineCtx.destination);
+      src.start(i * spb);
+    }
 
-    const side: "left" | "right" = index % 2 === 0 ? "left" : "right";
-    const delayMs = Math.max(0, (time - ctx.currentTime) * 1000);
-    window.setTimeout(() => this.options.onBeat?.(index, side), delayMs);
+    return offlineCtx.startRendering();
   }
 
-  private tick = () => {
-    if (!this.running || !this.audioCtx) return;
-    const ctx = this.audioCtx;
-    const spb = this.secondsPerBeat();
+  private scheduleRebuild() {
+    if (!this.running) return;
+    if (this.rebuildTimer !== null) window.clearTimeout(this.rebuildTimer);
+    this.rebuildTimer = window.setTimeout(() => {
+      this.rebuildTimer = null;
+      void this.rebuildAndPlay();
+    }, REBUILD_DEBOUNCE_MS);
+  }
 
-    // Self-heal after a long stall (backgrounding, interruption, etc.)
-    // instead of flooding a backlog of overdue beats.
-    if (this.nextBeatTime < ctx.currentTime - MAX_CATCHUP_BEHIND) {
-      const elapsedBeats = Math.floor(
-        (ctx.currentTime - this.startTime) / spb,
+  private async rebuildAndPlay(): Promise<void> {
+    const token = ++this.rebuildToken;
+    const buffer = await this.buildLoopBuffer();
+    // Bail out if stopped, or a newer rebuild was requested, while we were rendering.
+    if (!this.running || token !== this.rebuildToken) return;
+
+    const blob = audioBufferToWav(buffer);
+    const url = URL.createObjectURL(blob);
+    const previousUrl = this.currentLoopUrl;
+    this.currentLoopUrl = url;
+
+    const el = this.ensureAudioElement();
+    el.src = url;
+    try {
+      await el.play();
+    } catch {
+      this.options.onError?.(
+        "Gagal memulai audio. Coba tekan tombol mulai sekali lagi.",
       );
-      this.beatIndex = Math.max(this.beatIndex, elapsedBeats);
-      this.nextBeatTime = this.startTime + this.beatIndex * spb;
     }
-
-    while (this.nextBeatTime < ctx.currentTime + SCHEDULE_AHEAD_TIME) {
-      this.scheduleBeat(this.beatIndex, this.nextBeatTime);
-      this.nextBeatTime += this.secondsPerBeat();
-      this.beatIndex += 1;
-    }
-
-    this.handleWake();
-
-    this.timerId = window.setTimeout(this.tick, SCHEDULER_INTERVAL_MS);
-  };
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    this.refreshMediaSessionMetadata();
+  }
 
   private refreshMediaSessionMetadata() {
     if (typeof navigator === "undefined" || !("mediaSession" in navigator))
@@ -260,6 +308,7 @@ export class MetronomeEngine {
           { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
         ],
       });
+      navigator.mediaSession.playbackState = "playing";
     } catch {
       // MediaMetadata not available — ignore, purely cosmetic.
     }
@@ -268,29 +317,20 @@ export class MetronomeEngine {
   async start() {
     if (this.running) return;
     try {
-      const ctx = this.ensureContext();
+      this.ensureAudioElement();
       await this.loadSounds();
-      if (ctx.state === "suspended") await ctx.resume();
-      if (this.keepAliveEl) {
-        await this.keepAliveEl.play().catch(() => {});
-      }
-
       this.running = true;
-      this.startTime = ctx.currentTime + 0.08; // tiny lead-in
-      this.beatIndex = 0;
-      this.nextBeatTime = this.startTime;
+      await this.rebuildAndPlay();
 
       if ("mediaSession" in navigator) {
-        this.refreshMediaSessionMetadata();
-        navigator.mediaSession.playbackState = "playing";
         navigator.mediaSession.setActionHandler("play", () => this.start());
         navigator.mediaSession.setActionHandler("pause", () => this.stop());
         navigator.mediaSession.setActionHandler("stop", () => this.stop());
       }
 
       this.options.onRunningChange?.(true);
-      this.tick();
     } catch {
+      this.running = false;
       this.options.onError?.(
         "Gagal memulai audio. Coba tekan tombol mulai sekali lagi.",
       );
@@ -300,17 +340,17 @@ export class MetronomeEngine {
   stop() {
     if (!this.running) return;
     this.running = false;
-    if (this.timerId !== null) {
-      window.clearTimeout(this.timerId);
-      this.timerId = null;
+    if (this.rebuildTimer !== null) {
+      window.clearTimeout(this.rebuildTimer);
+      this.rebuildTimer = null;
     }
-    this.keepAliveEl?.pause();
+    this.audioEl?.pause();
     if ("mediaSession" in navigator) {
       navigator.mediaSession.playbackState = "paused";
     }
     this.options.onRunningChange?.(false);
-    // The AudioContext is kept alive (not closed) so the next start() is
-    // instant and doesn't need another user-gesture unlock.
+    // The <audio> element is kept around (not destroyed) so the next
+    // start() is instant and doesn't need another user-gesture unlock.
   }
 
   destroy() {
@@ -321,7 +361,8 @@ export class MetronomeEngine {
       window.removeEventListener("focus", this.handleWake);
       this.visibilityBound = false;
     }
-    this.keepAliveEl?.pause();
-    this.audioCtx?.close().catch(() => {});
+    if (this.currentLoopUrl) URL.revokeObjectURL(this.currentLoopUrl);
+    this.audioEl?.remove();
+    this.audioEl = null;
   }
 }

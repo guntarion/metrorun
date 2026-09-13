@@ -23,13 +23,20 @@ body {
   overscroll-behavior-y: none;
 }
 
-@keyframes beat-flash {
-  0% {
+/* Cosmetic only — the actual beat audio loops natively in <audio>, not
+   driven by this animation. Flashes briefly at the start of each cycle,
+   then settles back to idle for the rest of the period. A negative
+   animation-delay (set inline) phase-shifts left/right dots against
+   each other using this same keyframe. */
+@keyframes beat-pulse-cycle {
+  0%,
+  6% {
     transform: scale(1.15);
     border-color: #fb923c;
     background-color: rgb(249 115 22 / 25%);
     color: #fdba74;
   }
+  18%,
   100% {
     transform: scale(1);
     border-color: #334155;
@@ -38,6 +45,8 @@ body {
   }
 }
 
-.beat-flash {
-  animation: beat-flash 500ms ease-out forwards;
+.beat-pulse {
+  animation-name: beat-pulse-cycle;
+  animation-timing-function: ease-out;
+  animation-iteration-count: infinite;
 }

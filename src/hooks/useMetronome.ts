@@ -47,15 +47,10 @@ export function useMetronome() {
   const [isRunning, setIsRunning] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastBeat, setLastBeat] = useState<{
-    index: number;
-    side: "left" | "right";
-  } | null>(null);
 
   // Create the engine once on mount.
   useEffect(() => {
     const engine = new MetronomeEngine({
-      onBeat: (index, side) => setLastBeat({ index, side }),
       onRunningChange: (running) => {
         setIsRunning(running);
         setIsStarting(false);
@@ -136,6 +131,5 @@ export function useMetronome() {
     start,
     stop,
     toggle,
-    lastBeat,
   };
 }

@@ -62,23 +62,34 @@ function RepeatButton({
   );
 }
 
-/** A beat indicator dot that replays its flash animation via a key remount
- * whenever `flashSeed` changes — no local state needed. */
+/** A beat indicator dot driven purely by CSS (no per-beat JS event exists
+ * anymore — the actual audio loops natively, see metronome-engine.ts). A
+ * negative animation-delay phase-shifts the same cycle so left/right can
+ * alternate against each other while sharing one keyframe definition. */
 function BeatDot({
   label,
-  flashSeed,
+  running,
+  periodSeconds,
+  phaseSeconds,
 }: {
   label: string;
-  flashSeed: number | null;
+  running: boolean;
+  periodSeconds: number;
+  phaseSeconds: number;
 }) {
   return (
     <div
-      key={flashSeed ?? "idle"}
-      className={`flex h-14 w-14 items-center justify-center rounded-full border-2 text-sm font-semibold ${
-        flashSeed !== null
-          ? "beat-flash"
-          : "border-slate-700 text-slate-500"
+      className={`flex h-14 w-14 items-center justify-center rounded-full border-2 text-sm font-semibold border-slate-700 text-slate-500 ${
+        running ? "beat-pulse" : ""
       }`}
+      style={
+        running
+          ? {
+              animationDuration: `${periodSeconds}s`,
+              animationDelay: `-${phaseSeconds}s`,
+            }
+          : undefined
+      }
     >
       {label}
     </div>
@@ -100,15 +111,10 @@ export default function MetronomeApp() {
     isStarting,
     error,
     toggle,
-    lastBeat,
   } = useMetronome();
 
   const isAlternating = beatMode === "alternate";
-  const sameModeFlashSeed = !isAlternating && lastBeat ? lastBeat.index : null;
-  const leftFlashSeed =
-    isAlternating && lastBeat?.side === "left" ? lastBeat.index : null;
-  const rightFlashSeed =
-    isAlternating && lastBeat?.side === "right" ? lastBeat.index : null;
+  const periodSeconds = 60 / bpm;
 
   return (
     <div className="flex min-h-dvh flex-col bg-slate-950 text-slate-100">
@@ -124,9 +130,18 @@ export default function MetronomeApp() {
         <div className="mt-6 flex items-center justify-center gap-6">
           <BeatDot
             label={isAlternating ? "KIRI" : "•"}
-            flashSeed={isAlternating ? leftFlashSeed : sameModeFlashSeed}
+            running={isRunning}
+            periodSeconds={periodSeconds}
+            phaseSeconds={0}
           />
-          {isAlternating && <BeatDot label="KANAN" flashSeed={rightFlashSeed} />}
+          {isAlternating && (
+            <BeatDot
+              label="KANAN"
+              running={isRunning}
+              periodSeconds={periodSeconds}
+              phaseSeconds={periodSeconds / 2}
+            />
+          )}
         </div>
 
         {/* BPM display + nudge */}

@@ -23,12 +23,17 @@ Repo ini adalah project Next.js standar, jadi tinggal `vercel deploy` atau hubun
 
 ## Kenapa bisa tetap bunyi walau layar dikunci
 
-Dua jalur audio yang sengaja dipisah di `src/lib/metronome-engine.ts`:
+Ini butuh dua kali percobaan yang gagal di iPhone sungguhan sebelum ketemu desain yang tahan, jadi dicatat di sini supaya tidak terulang:
 
-1. **Suara ketukan** — dijadwalkan lewat Web Audio API (lookahead scheduler, sample-accurate) dan disambungkan langsung ke `audioContext.destination`. Ini jalur render native yang jalan di thread audio khusus (bukan main JS thread), jadi begitu sebuah ketukan dijadwalkan, waktu putarnya tidak lagi bergantung pada seberapa lancar JS thread berjalan.
-2. **File "keep-alive"** (`public/sounds/keepalive.mp3`, nada sangat pelan ~-55dB, loop) — diputar lewat elemen `<audio>` terpisah yang tidak ada hubungannya dengan suara ketukan. Tugasnya cuma satu: membuat iOS menganggap halaman ini "sedang memutar media" sehingga tidak disuspend penuh saat layar dikunci.
+1. **Percobaan 1** — scheduler Web Audio API biasa (lookahead scheduler) yang disambung langsung ke `audioContext.destination`. Presisi sample-accurate, tapi begitu layar dikunci, iOS men-suspend `AudioContext` sepenuhnya karena tidak ada elemen `<audio>` yang benar-benar "diputar" — bunyi berhenti total.
+2. **Percobaan 2** — scheduler yang sama, tapi outputnya di-stream lewat `MediaStreamAudioDestinationNode` ke elemen `<audio>` tersembunyi, supaya ada "media yang sedang diputar" bagi iOS. Halaman jadi tetap hidup di background, tapi live stream itu punya clock sendiri yang terpisah dari clock internal `AudioContext` — begitu CPU tertekan (background throttling), keduanya saling drift dan elemen `<audio>` terpaksa skip/stretch sample untuk resync. Hasilnya: tempo jadi kacau/acak persis begitu di-background.
 
-Versi awal sempat menggabungkan keduanya lewat `MediaStreamAudioDestinationNode` (suara ketukan di-stream ke elemen `<audio>` yang sama) — ternyata ini menyebabkan tempo kacau begitu di-background, karena stream langsung dan clock internal `AudioContext` adalah dua clock domain terpisah yang saling drift di bawah tekanan CPU (throttling background), memaksa elemen `<audio>` melompat/meregangkan sample untuk resync. Memisahkan keduanya menghilangkan sumber masalah itu.
+**Desain final** (ada di `src/lib/metronome-engine.ts`): tidak ada lagi audio yang di-stream secara live. Seluruh pola ketukan (32 ketukan sekaligus) dirender di muka jadi satu file WAV asli lewat `OfflineAudioContext`, lalu file itu diputar lewat `<audio loop>` biasa — mekanisme yang sama persis dipakai situs musik/podcast untuk playback gapless di background. Karena cuma ada satu clock (mesin media native browser yang me-loop file statis), tidak ada JS timer yang perlu terus berjalan sama sekali setelah play dimulai, sehingga:
+
+- Kebal terhadap background-throttling (tidak ada scheduler JS yang bisa telat/drift).
+- Elemen `<audio>` ini justru **adalah** suara yang terdengar, jadi iOS punya alasan jelas untuk tidak men-suspend-nya.
+
+Konsekuensinya: mengubah BPM/suara/mode saat berjalan akan me-render ulang loop dan mengganti file yang diputar — ada jeda/klik singkat sesaat (wajar, sama seperti mengganti tempo di metronome fisik), di-debounce ~180ms supaya menekan tombol +/- berkali-kali tidak memicu render berulang-ulang.
 
 Ini bukan jaminan 100% — perilaku background audio di Safari bisa berubah antar versi iOS. **Wajib diuji langsung**: tekan Mulai, kunci layar, masukkan ke kantong, jalan/lari beberapa menit, dan dengarkan apakah ketukan tetap presisi dan tidak berhenti. Kalau ternyata masih bermasalah di iOS versi HP Anda, opsi berikutnya adalah membungkus app ini dengan Capacitor dan sideload gratis lewat Xcode/AltStore (lihat percakapan sebelumnya) — kode Next.js/React di sini bisa banyak dipakai ulang untuk rute itu.
 
@@ -38,7 +43,7 @@ Service worker (`public/sw.js`) meng-cache app shell dan file suara supaya metro
 
 ## Struktur kode
 
-- `src/lib/metronome-engine.ts` — mesin audio inti (AudioContext, scheduler, routing ke `<audio>`, Media Session).
+- `src/lib/metronome-engine.ts` — mesin audio inti: decode suara, render loop 32-ketukan lewat `OfflineAudioContext` jadi WAV, putar via `<audio loop>`, Media Session.
 - `src/hooks/useMetronome.ts` — hook React yang membungkus engine dan menyimpan setelan terakhir ke `localStorage`.
 - `src/components/MetronomeApp.tsx` — UI (BPM, preset, pilihan suara, mode ketukan, volume, tombol mulai/berhenti).
 - `public/sounds/` — lima klip beat siap pakai (dipotong & di-fade dari file sumber Anda): `click.mp3` (mode "Sama"), `tik.mp3`/`tok.mp3` (pack "Tik-Tok"), `tik2.mp3`/`tak2.mp3` (pack "Tik-Tak", varian lebih tajam).
