@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BeatMode,
+  LoopInfo,
   MAX_BPM,
   MIN_BPM,
   MetronomeEngine,
@@ -47,6 +48,11 @@ export function useMetronome() {
   const [isRunning, setIsRunning] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What's actually audible right now — used to keep the beat-indicator
+  // animation in phase with the real loop instead of the live (possibly
+  // just-changed, not-yet-rebuilt) bpm/mode state. See metronome-engine.ts.
+  const [loopInfo, setLoopInfo] = useState<LoopInfo | null>(null);
+  const [loopVersion, setLoopVersion] = useState(0);
 
   // Create the engine once on mount.
   useEffect(() => {
@@ -54,10 +60,15 @@ export function useMetronome() {
       onRunningChange: (running) => {
         setIsRunning(running);
         setIsStarting(false);
+        if (!running) setLoopInfo(null);
       },
       onError: (message) => {
         setError(message);
         setIsStarting(false);
+      },
+      onLoopStart: (info) => {
+        setLoopInfo(info);
+        setLoopVersion((v) => v + 1);
       },
     });
     engineRef.current = engine;
@@ -131,5 +142,7 @@ export function useMetronome() {
     start,
     stop,
     toggle,
+    loopInfo,
+    loopVersion,
   };
 }

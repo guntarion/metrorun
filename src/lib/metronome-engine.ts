@@ -79,16 +79,27 @@ export type BeatMode = "same" | "alternate";
 export const MIN_BPM = 40;
 export const MAX_BPM = 240;
 
+export interface LoopInfo {
+  bpm: number;
+  soundPack: SoundPackId;
+  beatMode: BeatMode;
+}
+
 interface EngineOptions {
   onRunningChange?: (running: boolean) => void;
   onError?: (message: string) => void;
+  /** Fires exactly when a (re)built loop actually starts audibly playing —
+   * use this, not the live bpm/mode state, to keep any UI beat-indicator in
+   * phase with what's actually audible (see MetronomeApp.tsx). */
+  onLoopStart?: (info: LoopInfo) => void;
 }
 
 const SAMPLE_RATE = 44100;
-// How many beats get baked into one loop. Larger = any loop-seam artifact
-// happens less often, at the cost of a slightly bigger render/file. Render
-// cost is trivial even at this size, so we bias toward "rare seams".
-const LOOP_BEATS = 32;
+// How many beats get baked into one loop. Larger = the (unavoidable, see
+// README "Keterbatasan yang diketahui") loop-seam hiccup happens less
+// often, at the cost of a slightly bigger render/file. Render cost stays
+// trivial even at this size, so we bias toward "rare seams".
+const LOOP_BEATS = 128;
 // Debounce for on-the-fly changes (BPM +/- held down, quick pack switching)
 // so we don't re-render and restart the loop on every single tick.
 const REBUILD_DEBOUNCE_MS = 180;
@@ -288,6 +299,14 @@ export class MetronomeEngine {
     el.src = url;
     try {
       await el.play();
+      // Tell listeners the phase/tempo they should visually sync to — the
+      // moment this loop (not the live, possibly just-changed bpm/mode
+      // state) actually became audible.
+      this.options.onLoopStart?.({
+        bpm: this.bpm,
+        soundPack: this.soundPack,
+        beatMode: this.beatMode,
+      });
     } catch {
       this.options.onError?.(
         "Gagal memulai audio. Coba tekan tombol mulai sekali lagi.",

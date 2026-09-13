@@ -111,10 +111,18 @@ export default function MetronomeApp() {
     isStarting,
     error,
     toggle,
+    loopInfo,
+    loopVersion,
   } = useMetronome();
 
-  const isAlternating = beatMode === "alternate";
-  const periodSeconds = 60 / bpm;
+  // Drive the visual indicator from what's *actually audible* (the
+  // currently-playing loop's own bpm/mode), not the live UI state — bpm/mode
+  // changes are debounced and re-rendered before they become audible, so
+  // syncing to the live state would visibly drift from the real sound.
+  const visualBpm = loopInfo?.bpm ?? bpm;
+  const visualBeatMode = loopInfo?.beatMode ?? beatMode;
+  const isAlternating = visualBeatMode === "alternate";
+  const periodSeconds = 60 / visualBpm;
 
   return (
     <div className="flex min-h-dvh flex-col bg-slate-950 text-slate-100">
@@ -126,8 +134,13 @@ export default function MetronomeApp() {
           </p>
         </header>
 
-        {/* Beat indicator */}
-        <div className="mt-6 flex items-center justify-center gap-6">
+        {/* Beat indicator — keyed by loopVersion so it fully remounts (a
+            clean CSS animation restart) exactly when a new loop becomes
+            audible, instead of warping mid-cycle on every settings change. */}
+        <div
+          key={loopVersion}
+          className="mt-6 flex items-center justify-center gap-6"
+        >
           <BeatDot
             label={isAlternating ? "KIRI" : "•"}
             running={isRunning}
