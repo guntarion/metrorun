@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Metrorun
 
-## Getting Started
+Metronome PWA untuk memandu pace lari — atur BPM ketukan, pakai preset umum (152/156/160/165/170), naikkan/turunkan on the fly, dan pilih apakah ketukan genap-ganjil bersuara sama atau beda (tik kiri / tok kanan).
 
-First, run the development server:
+## Menjalankan secara lokal
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Buka [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Deploy ke Vercel
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Repo ini adalah project Next.js standar, jadi tinggal `vercel deploy` atau hubungkan repo ke dashboard Vercel seperti biasa. Tidak ada environment variable yang dibutuhkan.
 
-## Learn More
+## Memasang di iPhone (tanpa akun Apple Developer)
 
-To learn more about Next.js, take a look at the following resources:
+1. Buka URL hasil deploy di Safari (bukan Chrome/lainnya — PWA install hanya lewat Safari di iOS).
+2. Tap tombol Share, pilih **Add to Home Screen**.
+3. Buka app dari ikon di Home Screen (bukan dari tab Safari) — mode `standalone` ini yang paling stabil untuk audio background.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Kenapa bisa tetap bunyi walau layar dikunci
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+iOS menganggap sebuah tab/PWA sedang "memutar media" — dan karena itu layak dapat waktu CPU di background — kalau audio-nya mengalir lewat elemen `<audio>` yang mulai diputar dari sebuah user gesture (tap tombol Mulai). Engine di `src/lib/metronome-engine.ts` memanfaatkan ini: Web Audio API dipakai untuk penjadwalan ketukan yang presisi (sample-accurate, lookahead scheduler), lalu outputnya dialirkan lewat `MediaStreamAudioDestinationNode` ke elemen `<audio>` tersembunyi — bukan langsung ke speaker. Kombinasi ini juga didaftarkan ke Media Session API supaya lock screen menampilkan kontrol "Now Playing" dan BPM saat ini.
 
-## Deploy on Vercel
+Ini bukan jaminan 100% — perilaku background audio di Safari bisa berubah antar versi iOS. **Wajib diuji langsung**: tekan Mulai, kunci layar, masukkan ke kantong, jalan/lari beberapa menit, dan dengarkan apakah ketukan tetap presisi dan tidak berhenti. Kalau ternyata gagal di iOS versi HP Anda, opsi berikutnya adalah membungkus app ini dengan Capacitor dan sideload gratis lewat Xcode/AltStore (lihat percakapan sebelumnya) — kode Next.js/React di sini bisa banyak dipakai ulang untuk rute itu.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Service worker (`public/sw.js`) meng-cache app shell dan file suara supaya metronome tetap jalan walau tidak ada sinyal saat lari.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Struktur kode
+
+- `src/lib/metronome-engine.ts` — mesin audio inti (AudioContext, scheduler, routing ke `<audio>`, Media Session).
+- `src/hooks/useMetronome.ts` — hook React yang membungkus engine dan menyimpan setelan terakhir ke `localStorage`.
+- `src/components/MetronomeApp.tsx` — UI (BPM, preset, pilihan suara, mode ketukan, volume, tombol mulai/berhenti).
+- `public/sounds/` — lima klip beat siap pakai (dipotong & di-fade dari file sumber Anda): `click.mp3` (mode "Sama"), `tik.mp3`/`tok.mp3` (pack "Tik-Tok"), `tik2.mp3`/`tak2.mp3` (pack "Tik-Tak", varian lebih tajam).
+- `public/sw.js` — service worker untuk offline caching.
+- `src/app/manifest.ts` — manifest PWA (ikon, warna tema, mode standalone).
