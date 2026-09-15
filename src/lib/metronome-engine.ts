@@ -18,10 +18,10 @@
  *    drift apart and the element has to skip/stretch samples to resync —
  *    audible as a chaotic, randomly-shifting tempo.
  *
- * The design that actually holds up: don't stream anything live. Render the
- * whole beat pattern (many bars' worth, so any loop-seam is rare) offline
- * into one real WAV file with `OfflineAudioContext`, and hand that file to a
- * normal `<audio loop>` element. There is exactly one clock involved — the
+ * The design that actually holds up: don't stream anything live. Build the
+ * whole beat pattern (many minutes' worth, so any loop-seam is rare) ahead
+ * of time into one real WAV file, and hand that file to a normal
+ * `<audio loop>` element. There is exactly one clock involved — the
  * browser's native media pipeline looping a static file, the same mechanism
  * every music/podcast site relies on for gapless background playback. No JS
  * timer needs to run at all once playback starts, so background throttling
@@ -32,6 +32,19 @@
  * swaps it in, which causes a brief (roughly one render cycle) restart click
  * — acceptable since it only happens on an explicit user action, same as
  * changing tempo on a physical metronome.
+ *
+ * One more pitfall worth recording: the loop is built by stamping each
+ * beat's decoded PCM samples directly into a flat Float32Array with plain
+ * TypedArray copies — NOT by creating one `AudioBufferSourceNode` per beat
+ * inside an `OfflineAudioContext` (which is the "normal" Web Audio way to
+ * assemble a buffer like this). That was tried first and measured ~21
+ * seconds to render a 10-minute, 1600-beat loop at 160 BPM. Web Audio's
+ * node graph re-evaluates every connected node on every render quantum
+ * (~128 samples) for the whole render, so total work scales with
+ * beats × quanta, not beats × sound-length — it falls over once beat count
+ * climbs into four digits, exactly the range TARGET_LOOP_SECONDS needs.
+ * Plain typed-array copies have no per-node graph overhead and finish in
+ * single-digit milliseconds even at that scale.
  */
 
 export type BeatSoundId = "click" | "tik" | "tok" | "tik2" | "tak2";
@@ -95,23 +108,56 @@ interface EngineOptions {
 }
 
 const SAMPLE_RATE = 44100;
-// How many beats get baked into one loop. Larger = the (unavoidable, see
-// README "Keterbatasan yang diketahui") loop-seam hiccup happens less
-// often, at the cost of a slightly bigger render/file. Render cost stays
-// trivial even at this size, so we bias toward "rare seams".
-const LOOP_BEATS = 128;
+// Target loop length in *time*, not beat count. This is the important fix:
+// a fixed beat count makes the real-world loop-seam interval swing wildly
+// across the BPM range (128 beats is 3.2 min at 40 BPM but only 32s at 240
+// BPM) — sizing by time instead gives a consistent, predictable seam
+// interval no matter what BPM is playing. 10 minutes covers most of a
+// single run phase (warmup/main/cooldown) with at most one seam in it; see
+// README "Kenapa bukan 1000/2000/5000 ketukan?" for the memory/render-time
+// math behind this choice, and the note there on interval training (many
+// tempo changes) where a shorter target may suit better.
+const TARGET_LOOP_SECONDS = 600;
+// Floor so a pathological state can't produce a near-empty buffer.
+const MIN_LOOP_BEATS = 16;
 // Debounce for on-the-fly changes (BPM +/- held down, quick pack switching)
 // so we don't re-render and restart the loop on every single tick.
 const REBUILD_DEBOUNCE_MS = 180;
 
-/** Minimal 16-bit PCM WAV encoder — turns a rendered AudioBuffer into a
- * real file `<audio loop>` can play natively (gapless, no JS involved). */
-function audioBufferToWav(buffer: AudioBuffer): Blob {
-  const numChannels = buffer.numberOfChannels;
-  const sampleRate = buffer.sampleRate;
+/** Stamp each beat's decoded mono PCM samples into a flat Float32Array at
+ * its beat-grid position. Plain typed-array copies (see the class doc
+ * comment above for why this replaced an OfflineAudioContext render). Beats
+ * never overlap in practice (each sound clip is ~100-150ms, well under one
+ * beat interval even at MAX_BPM's 250ms), so this is just placement, not
+ * mixing/summing. */
+function buildLoopSamples(
+  loopBeats: number,
+  spb: number,
+  soundForBeat: (index: number) => Float32Array | undefined,
+): Float32Array {
+  const totalSamples = Math.round(loopBeats * spb * SAMPLE_RATE);
+  const out = new Float32Array(totalSamples);
+  for (let i = 0; i < loopBeats; i++) {
+    const src = soundForBeat(i);
+    if (!src) continue;
+    const start = Math.round(i * spb * SAMPLE_RATE);
+    const len = Math.min(src.length, totalSamples - start);
+    if (len <= 0) continue;
+    out.set(len === src.length ? src : src.subarray(0, len), start);
+  }
+  return out;
+}
+
+/** Minimal 16-bit mono PCM WAV encoder — turns raw samples into a real file
+ * `<audio loop>` can play natively (gapless, no JS involved after this).
+ * Writes through an Int16Array view straight into the output buffer (both
+ * are little-endian on every real-world JS engine, so this is safe) rather
+ * than calling `DataView.setInt16` per sample — matters once
+ * TARGET_LOOP_SECONDS pushes sample counts into the tens of millions, where
+ * per-call overhead would otherwise add up to a noticeable stall. */
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   const bytesPerSample = 2;
-  const blockAlign = numChannels * bytesPerSample;
-  const dataSize = buffer.length * blockAlign;
+  const dataSize = samples.length * bytesPerSample;
 
   const arrayBuffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(arrayBuffer);
@@ -126,24 +172,20 @@ function audioBufferToWav(buffer: AudioBuffer): Blob {
   writeString(12, "fmt ");
   view.setUint32(16, 16, true);
   view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, numChannels, true);
+  view.setUint16(22, 1, true); // mono
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * blockAlign, true);
-  view.setUint16(32, blockAlign, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
   view.setUint16(34, 16, true);
   writeString(36, "data");
   view.setUint32(40, dataSize, true);
 
-  const channels: Float32Array[] = [];
-  for (let ch = 0; ch < numChannels; ch++) channels.push(buffer.getChannelData(ch));
-
-  let offset = 44;
-  for (let i = 0; i < buffer.length; i++) {
-    for (let ch = 0; ch < numChannels; ch++) {
-      const clamped = Math.max(-1, Math.min(1, channels[ch][i]));
-      view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
-      offset += 2;
-    }
+  // Header is exactly 44 bytes = 22 Int16 slots, so byte offset 44 is
+  // naturally 2-byte aligned and safe to view as Int16Array.
+  const pcm = new Int16Array(arrayBuffer, 44);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
 
   return new Blob([arrayBuffer], { type: "audio/wav" });
@@ -152,7 +194,10 @@ function audioBufferToWav(buffer: AudioBuffer): Blob {
 export class MetronomeEngine {
   private audioEl: HTMLAudioElement | null = null;
   private decodeCtx: OfflineAudioContext | null = null;
-  private buffers = new Map<BeatSoundId, AudioBuffer>();
+  // Mono PCM samples per sound, extracted once at decode time — everything
+  // downstream (buildLoopSamples) works with these directly, no AudioBuffer
+  // or audio-graph object needed for the actual loop-building step.
+  private buffers = new Map<BeatSoundId, Float32Array>();
   private loadingPromise: Promise<void> | null = null;
   private currentLoopUrl: string | null = null;
   private rebuildTimer: number | null = null;
@@ -216,7 +261,7 @@ export class MetronomeEngine {
           if (!res.ok) throw new Error(`Gagal memuat suara: ${url}`);
           const arrayBuffer = await res.arrayBuffer();
           const buffer = await decodeCtx.decodeAudioData(arrayBuffer);
-          this.buffers.set(id, buffer);
+          this.buffers.set(id, buffer.getChannelData(0));
         }),
       );
     })();
@@ -257,22 +302,21 @@ export class MetronomeEngine {
     return index % 2 === 0 ? pack.even : pack.odd;
   }
 
-  /** Render the current settings into one seamless looping WAV buffer. */
-  private async buildLoopBuffer(): Promise<AudioBuffer> {
+  /** Build one seamless looping sample buffer for the current settings.
+   * Beat count is derived from TARGET_LOOP_SECONDS so the real-world seam
+   * interval stays consistent regardless of BPM (see the constant's doc
+   * comment for why a fixed beat count doesn't do that). Synchronous and
+   * fast (plain typed-array copies — see the class doc comment for why this
+   * isn't an OfflineAudioContext render). */
+  private buildCurrentLoopSamples(): Float32Array {
     const spb = this.secondsPerBeat();
-    const totalSamples = Math.round(LOOP_BEATS * spb * SAMPLE_RATE);
-    const offlineCtx = new OfflineAudioContext(1, totalSamples, SAMPLE_RATE);
-
-    for (let i = 0; i < LOOP_BEATS; i++) {
-      const buffer = this.buffers.get(this.soundForBeat(i));
-      if (!buffer) continue;
-      const src = offlineCtx.createBufferSource();
-      src.buffer = buffer;
-      src.connect(offlineCtx.destination);
-      src.start(i * spb);
-    }
-
-    return offlineCtx.startRendering();
+    const loopBeats = Math.max(
+      MIN_LOOP_BEATS,
+      Math.ceil(TARGET_LOOP_SECONDS / spb),
+    );
+    return buildLoopSamples(loopBeats, spb, (i) =>
+      this.buffers.get(this.soundForBeat(i)),
+    );
   }
 
   private scheduleRebuild() {
@@ -286,11 +330,10 @@ export class MetronomeEngine {
 
   private async rebuildAndPlay(): Promise<void> {
     const token = ++this.rebuildToken;
-    const buffer = await this.buildLoopBuffer();
-    // Bail out if stopped, or a newer rebuild was requested, while we were rendering.
+    const samples = this.buildCurrentLoopSamples();
     if (!this.running || token !== this.rebuildToken) return;
 
-    const blob = audioBufferToWav(buffer);
+    const blob = encodeWav(samples, SAMPLE_RATE);
     const url = URL.createObjectURL(blob);
     const previousUrl = this.currentLoopUrl;
     this.currentLoopUrl = url;

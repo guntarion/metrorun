@@ -23,7 +23,7 @@ Repo ini adalah project Next.js standar, jadi tinggal `vercel deploy` atau hubun
 
 ## Kenapa bisa tetap bunyi walau layar dikunci
 
-Lihat bagian **Lesson learned** di bawah untuk riwayat lengkap tiga percobaan (dua gagal di iPhone sungguhan) sampai ketemu desain yang tahan: rendering seluruh pola ketukan jadi satu file WAV asli lewat `OfflineAudioContext`, lalu diputar via `<audio loop>` biasa — bukan di-stream/dijadwalkan secara live. Ini sudah **dikonfirmasi jalan lancar** di iPhone Anda saat layar dikunci maupun app di-background.
+Lihat bagian **Lesson learned** di bawah untuk riwayat lengkap empat percobaan (tiga bermasalah, satu di antaranya baru ketahuan setelah dipakai sungguhan) sampai ketemu desain yang tahan: seluruh pola ketukan dirender jadi satu file WAV asli, lalu diputar via `<audio loop>` biasa — bukan di-stream/dijadwalkan secara live. Ini sudah **dikonfirmasi jalan lancar** di iPhone Anda saat layar dikunci maupun app di-background.
 
 Konsekuensinya: mengubah BPM/suara/mode saat berjalan akan me-render ulang loop dan mengganti file yang diputar — ada jeda/klik singkat sesaat (wajar, sama seperti mengganti tempo di metronome fisik), di-debounce ~180ms supaya menekan tombol +/- berkali-kali tidak memicu render berulang-ulang. Indikator visual kiri/kanan disinkronkan ke loop yang **benar-benar sedang audible** (lewat event `onLoopStart` dari engine), bukan ke angka BPM di UI yang bisa berubah duluan sebelum audio-nya menyusul — supaya tidak "warp" tiap kali BPM diubah.
 
@@ -35,14 +35,14 @@ Service worker (`public/sw.js`) meng-cache app shell dan file suara supaya metro
 
 ## Struktur kode
 
-- `src/lib/metronome-engine.ts` — mesin audio inti: decode suara, render loop 128-ketukan lewat `OfflineAudioContext` jadi WAV, putar via `<audio loop>`, Media Session, event `onLoopStart` untuk sinkronisasi UI.
+- `src/lib/metronome-engine.ts` — mesin audio inti: decode suara sekali via `OfflineAudioContext`, susun loop ~10 menit dengan menempel sampel PCM langsung ke array (bukan render lewat audio-graph — lihat Percobaan 4 di bawah), encode ke WAV, putar via `<audio loop>`, Media Session, event `onLoopStart` untuk sinkronisasi UI.
 - `src/hooks/useMetronome.ts` — hook React yang membungkus engine dan menyimpan setelan terakhir ke `localStorage`.
 - `src/components/MetronomeApp.tsx` — UI (BPM, preset, pilihan suara, mode ketukan, volume, tombol mulai/berhenti, indikator beat kiri/kanan).
 - `public/sounds/` — lima klip beat siap pakai (dipotong & di-fade dari file sumber Anda): `click.mp3` (mode "Sama"), `tik.mp3`/`tok.mp3` (pack "Tik-Tok"), `tik2.mp3`/`tak2.mp3` (pack "Tik-Tak", varian lebih tajam).
 - `public/sw.js` — service worker untuk offline caching.
 - `src/app/manifest.ts` — manifest PWA (ikon, warna tema, mode standalone).
 
-## Lesson learned: tiga percobaan sampai audio background stabil
+## Lesson learned: empat percobaan sampai stabil dan enak dipakai
 
 Dicatat lengkap di sini supaya kalau nanti ada masalah serupa (atau proyek PWA audio lain), tidak perlu menemukan ulang dari nol lewat trial-and-error di HP sungguhan.
 
@@ -64,31 +64,60 @@ Dicatat lengkap di sini supaya kalau nanti ada masalah serupa (atau proyek PWA a
 
 **Pelajaran:** menambal masalah "izin background" dengan sekadar menempelkan sebuah `<audio>` yang menerima live stream bisa memindahkan masalah dari "berhenti total" ke "berjalan tapi rusak" — sama-sama tidak bisa dipakai, dan yang kedua justru lebih menyesatkan karena awalnya *terlihat* berhasil (baru rusak setelah dites background sungguhan).
 
-### Percobaan 3 (dipakai sekarang) — Rendering offline jadi file WAV asli
+### Percobaan 3 — Rendering offline jadi file WAV, tapi lewat audio-graph
 
-**Desain:** tidak ada lagi apa pun yang dijadwalkan/di-stream secara *live*. Setiap kali BPM/pola/suara berubah, `OfflineAudioContext` merender seluruh pola (128 ketukan) jadi satu `AudioBuffer` sekaligus, lalu di-encode manual jadi file WAV (PCM 16-bit) via `Blob`. File itu — bukan stream, file sungguhan — diputar lewat elemen `<audio loop>` biasa, sama seperti situs musik/podcast memutar sebuah track.
+**Desain:** tidak ada lagi apa pun yang dijadwalkan/di-stream secara *live*. Setiap kali BPM/pola/suara berubah, `OfflineAudioContext` merender seluruh pola (awalnya 32, lalu dinaikkan ke 128 ketukan) jadi satu `AudioBuffer` sekaligus — satu `AudioBufferSourceNode` per ketukan, dijadwalkan lewat `.start(waktu)` seperti scheduler Web Audio pada umumnya — lalu di-encode manual jadi file WAV (PCM 16-bit) via `Blob`. File itu — bukan stream, file sungguhan — diputar lewat elemen `<audio loop>` biasa, sama seperti situs musik/podcast memutar sebuah track.
 
-**Kenapa ini menang di kedua sisi:**
+**Kenapa desain intinya benar:**
 
 - Elemen `<audio>` ini **adalah** suara yang terdengar (bukan pendamping/keep-alive terpisah), jadi iOS punya alasan sah untuk tidak men-suspend-nya — sama seperti alasan Spotify Web Player boleh terus main saat layar dikunci.
-- Tidak ada dua clock yang bisa saling drift, karena tidak ada stream real-time sama sekali — hanya satu file statis yang di-loop oleh mesin media native browser. Setelah `play()` dipanggil, tidak ada satu pun JS timer yang perlu terus berjalan supaya tempo tetap presisi.
+- Tidak ada dua clock yang bisa saling drift, karena tidak ada stream real-time sama sekali — hanya satu file statis yang di-loop oleh mesin media native browser.
 
-**Trade-off yang disadari dan diterima:** lihat bagian **Keterbatasan yang diketahui** di bawah.
+**Gejala yang baru ketahuan setelah dipakai sungguhan:** jeda di titik sambung loop terasa mengganggu untuk sesi lari beneran (128 ketukan ≈ tiap 45-48 detik di pace 152-170 BPM — puluhan kali kena jeda dalam satu sesi 20-30 menit). Perbaikan pertama yang dicoba (menaikkan `LOOP_BEATS` ke angka lebih besar, misal 1000+) memunculkan gejala baru: **render sempat 21 detik** untuk loop 10-menit di 160 BPM (1600 ketukan).
+
+**Penyebab jeda-terlalu-sering:** `LOOP_BEATS` adalah **jumlah ketukan tetap**, bukan **durasi tetap** — jadi durasi nyata satu loop berubah-ubah drastis tergantung BPM (128 ketukan = 192 detik di 40 BPM, tapi cuma 32 detik di 240 BPM). Di rentang BPM lari yang Anda pakai (152-170), itu artinya loop-nya pendek dan jeda sering muncul.
+
+**Penyebab render-jadi-21-detik:** ini murni soal cara `OfflineAudioContext` bekerja, bukan soal ukuran file. Grafik Web Audio meng-evaluasi **setiap** node yang terhubung pada **setiap** render-quantum (~128 sample) sepanjang durasi render — jadi biayanya kira-kira `jumlah_node × jumlah_quantum`, bukan `jumlah_node × panjang_suara_masing-masing`. Untuk 1600 node (satu per ketukan) × ~206.000 quantum (untuk render 600 detik), itu ratusan juta evaluasi node — walau di tiap quantum hampir semua node itu sebenarnya "diam" (belum atau sudah selesai bunyi). Ini kelemahan yang tidak muncul di 128 ketukan (masih ringan), baru menonjol begitu jumlah ketukan naik ke ribuan.
+
+### Percobaan 4 (dipakai sekarang) — Durasi tetap (bukan ketukan tetap) + stamping PCM manual
+
+Dua perbaikan independen, sama-sama perlu, di `src/lib/metronome-engine.ts`:
+
+**1. Ukuran loop dihitung dari target durasi (`TARGET_LOOP_SECONDS = 600`, 10 menit), bukan jumlah ketukan tetap.** Jumlah ketukan dihitung otomatis dari BPM saat itu (`Math.ceil(600 / secondsPerBeat)`) — hasilnya jeda muncul dengan interval **waktu nyata yang konsisten**, berapa pun BPM-nya, bukan lagi berubah-ubah 32 detik sampai 3 menit seperti sebelumnya.
+
+**2. Loop tidak lagi dirender lewat `OfflineAudioContext`/audio-graph sama sekali** — untuk kasus ini, "menempelkan bunyi pendek di titik-titik waktu tertentu tanpa tumpang tindih" tidak butuh mixing graph audio, cukup salin sampel mentah. `buildLoopSamples()` menyalin PCM tiap suara (sudah di-decode sekali di awal jadi `Float32Array`) langsung ke posisi yang tepat di array besar pakai `TypedArray.set()` — operasi memory-copy murni, bukan simulasi grafik audio. Hasilnya: render loop 10 menit turun dari **21.000ms menjadi ~5-10ms** (diverifikasi lewat instrumentasi `performance.now()` langsung, bukan estimasi), dan waktu total dari klik "Mulai"/ganti setelan sampai audio baru terdengar turun jadi **~230-320ms** (didominasi encode WAV + `el.play()`, bukan lagi oleh render).
+
+**Trade-off yang disadari dan diterima:** lihat bagian **Keterbatasan yang diketahui** di bawah — jeda di titik sambung loop tetap ada, hanya jadi jauh lebih jarang, bukan hilang total.
 
 ## Keterbatasan yang diketahui: jeda kecil di titik sambung loop
 
-Setiap `LOOP_BEATS` ketukan (128 ketukan; ~48 detik di 160 BPM, ~34 detik di 224 BPM, ~3 menit di 40 BPM), elemen `<audio>` harus melompat balik ke awal file untuk mengulang (`loop = true`). Atribut `loop` di spesifikasi HTML **tidak menjamin** lompatan ini sample-accurate/gapless di semua implementasi browser — WebKit/Safari punya riwayat menyisipkan jeda kecil di titik ini, walau sumbernya WAV/PCM murni (yang seharusnya lebih rapat dibanding MP3 yang punya padding encoder). Ini yang terasa sebagai "hentakan" tempo sesaat setiap beberapa puluh detik.
+Setiap loop (sekarang: sekali per ~10 menit, bukan lagi per 128 ketukan), elemen `<audio>` harus melompat balik ke awal file untuk mengulang (`loop = true`). Atribut `loop` di spesifikasi HTML **tidak menjamin** lompatan ini sample-accurate/gapless di semua implementasi browser — WebKit/Safari punya riwayat menyisipkan jeda kecil di titik ini, walau sumbernya WAV/PCM murni (yang seharusnya lebih rapat dibanding MP3 yang punya padding encoder). Ini yang terasa sebagai "hentakan" tempo sesaat.
 
 **Ini murni keterbatasan platform, bukan bug di kode ini** — tidak ada cara memaksa `<audio loop>` gapless dari JavaScript; itu di luar kendali halaman web, ditentukan oleh implementasi mesin media browser.
 
-**Mitigasi yang sudah diterapkan:** `LOOP_BEATS` dinaikkan dari 32 → 128, jadi jeda ini terjadi 4x lebih jarang (dulu tiap ~12 detik di 160 BPM, sekarang tiap ~48 detik) — file WAV tetap kecil (puluhan MB paling besar di BPM rendah) dan waktu render tetap praktis instan, jadi menaikkan angka ini lebih lanjut (misal 256) masih murah kalau jeda ini masih terasa mengganggu, tinggal ubah konstanta `LOOP_BEATS` di `src/lib/metronome-engine.ts`.
+### Kenapa bukan 1000/2000/5000 *ketukan*? (dan kenapa sekarang berbasis detik, bukan ketukan)
 
-**Kenapa tidak sekalian dihilangkan total** (opsi yang dipertimbangkan tapi sengaja tidak diambil):
+Ini pertanyaan yang tepat untuk ditanyakan sebelum sekadar menaikkan angka. Jawabannya: **tidak ada tembok keras dari iOS/hardware di angka ketukan tertentu** — yang ada adalah dua ongkos nyata, dan keduanya sebenarnya fungsi dari **durasi dalam detik**, bukan jumlah ketukan. Ini kenapa "kenaikan LOOP_BEATS" adalah pertanyaan yang salah kerangka — pertanyaan yang benar adalah "berapa lama satu loop, dalam menit?".
 
-- *Render seluruh durasi lari* (misal 60 menit) jadi satu file tanpa loop sama sekali — tidak praktis: WAV mono 16-bit 60 menit ≈ 317 MB, terlalu besar untuk sebuah Blob di memori HP dan lama untuk dirender/didekode.
-- *Dua elemen `<audio>` yang saling estafet* (elemen B mulai diputar tepat sebelum elemen A selesai, lalu bergantian) — bisa menghilangkan jeda saat app di foreground, tapi mekanisme "tepat sebelum selesai" itu butuh JS timer yang mengukur waktu dengan presisi tinggi. Persis jenis ketergantungan pada JS timer yang baru saja terbukti tidak bisa diandalkan di background (Percobaan 1 & 2 di atas) — berisiko menukar masalah kecil (jeda tiap 48 detik) dengan masalah besar yang sudah pernah terjadi (tempo kacau saat di-background). Tidak sepadan.
+**Ongkos 1 — ukuran file (memori).** WAV mono 16-bit @ 44.1kHz = tepat 44100 × 2 = 88.200 byte/detik ≈ 5,05 MB/menit, **flat berapa pun BPM-nya** (karena format PCM tidak peduli seberapa sering ada bunyi di dalamnya, hanya peduli berapa lama durasinya). Jumlah ketukan itu sendiri tidak berpengaruh ke ukuran file — cuma durasi yang berpengaruh:
 
-Kesimpulan: dalam batasan PWA/browser, jeda periodik ini **memang tidak sepenuhnya bisa dihindari** — hanya bisa dibuat sangat jarang. Untuk penghilangan total, lihat perbandingan Capacitor vs native di bawah.
+| Target durasi loop | Ukuran WAV (mono 16-bit) |
+|---|---|
+| 1 menit | ~5 MB |
+| 10 menit (dipakai sekarang) | ~50 MB |
+| 30 menit | ~151 MB |
+| 60 menit | ~303 MB |
+| 125 menit (≈ 5000 ketukan di 40 BPM) | ~631 MB |
+
+iPhone 15 (RAM 6GB) sanggup menampung ratusan MB satu Blob tanpa masalah dalam kondisi normal. Tapi saat benar-benar dipakai lari, HP kemungkinan juga menjalankan Strava/Apple Health/Maps/Spotify di background berebut RAM yang sama — 600MB untuk satu file metronome jadi taruhan yang tidak perlu diambil untuk manfaat yang kecil (5000 ketukan di 40 BPM = sekali seumur hidup Anda kepakai, karena BPM lari Anda 152-170).
+
+**Ongkos 2 — waktu proses.** Ini yang justru jadi masalah nyata dan sudah dites di sesi ini (lihat Percobaan 3 di atas): kalau proses "menyusun loop" masih lewat `OfflineAudioContext` (satu node per ketukan), waktunya naik jauh lebih cepat daripada linear terhadap jumlah ketukan — 1600 ketukan sampai 21 detik. Setelah diganti ke stamping PCM manual (Percobaan 4), ongkos ini praktis hilang (~5-10ms untuk 10 menit), sehingga sekarang benar-benar aman menaikkan `TARGET_LOOP_SECONDS` jauh lebih tinggi kalau suatu saat dirasa masih kurang panjang — tinggal pertimbangkan ongkos memori (tabel di atas) sebagai satu-satunya batasan yang tersisa.
+
+**Kenapa 10 menit dipilih sebagai default:** untuk lari 5K dengan 2-3 kali ganti fase (warmup → lari → cooldown) seperti yang Anda gambarkan, loop 10 menit kemungkinan besar **tidak akan pernah kena jeda sama sekali** dalam satu fase (fase biasanya lebih pendek dari 10 menit), atau paling banyak sekali. Untuk **interval training** yang ganti tempo tiap 1-5 menit, loop 10 menit jadi "kelebihan" (sebagian besar loop yang dirender tidak akan pernah terdengar sebelum diganti lagi oleh setelan berikutnya) — tapi ini cuma buang-buang sedikit memori/waktu render (~5-10ms, tidak terasa), bukan masalah fungsional, jadi satu nilai default ini tetap aman dipakai untuk kedua skenario. Kalau ke depannya terasa perlu, `TARGET_LOOP_SECONDS` bisa dijadikan setelan yang bisa dipilih pengguna (misal opsi 5/10/20 menit) — tapi untuk sekarang satu nilai tetap sudah cukup mengingat ongkosnya kecil di kedua ujung.
+
+**Kenapa preset "rekaman fixed" (ide Anda) tidak dipakai untuk mengatasi jeda:** ini sempat dipertimbangkan tapi ternyata tidak menyelesaikan masalah yang dimaksud — pre-bake file per preset BPM cuma memindahkan **kapan** rendering terjadi (saat build vs saat runtime), bukan mengubah **bagaimana** `<audio loop>` mengulang filenya. Filenya tetap loop lewat mekanisme WebKit yang sama, jeda di titik sambung tetap ada tidak peduli file itu dirender detik itu juga atau sudah disiapkan sebelumnya. Manfaat nyata dari pre-bake hanya "tap preset langsung main tanpa nunggu render" — dan itu sudah tidak relevan sekarang karena render manual (~5-10ms) sudah jauh di bawah ambang yang terasa oleh manusia, jadi tidak ada nilai tambah yang sepadan dengan kompleksitas ekstra (harus punya dua jalur: preset pre-baked vs BPM off-preset yang tetap butuh render dinamis).
+
+**Kesimpulan:** dalam batasan PWA/browser, jeda periodik ini **memang tidak sepenuhnya bisa dihindari** — hanya bisa dibuat sangat jarang (sekarang: sekali per ~10 menit, dulu sekali per ~48 detik). Untuk penghilangan total, lihat perbandingan Capacitor vs native di bawah — di situ mekanismenya (`AVAudioPlayerNode` loop di level OS) memang didesain gapless, bukan cuma "dibuat jarang".
 
 ## Kalau dibungkus Capacitor, apakah kedua masalah ini terpecahkan?
 
