@@ -22,3 +22,48 @@ body {
   color: var(--foreground);
   overscroll-behavior-y: none;
 }
+
+/* Big, easy-to-grab range slider (default iOS thumb is tiny). The input is
+   tall so the whole band is touchable; --pct (set inline) paints the fill. */
+.range-big {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 44px;
+  background: transparent;
+  touch-action: pan-y;
+}
+.range-big::-webkit-slider-runnable-track {
+  height: 10px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    #f97316 var(--pct, 50%),
+    #334155 var(--pct, 50%)
+  );
+}
+.range-big::-moz-range-track {
+  height: 10px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    #f97316 var(--pct, 50%),
+    #334155 var(--pct, 50%)
+  );
+}
+.range-big::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 34px;
+  height: 34px;
+  margin-top: -12px;
+  border-radius: 9999px;
+  background: #f97316;
+  border: 3px solid #fff7ed;
+}
+.range-big::-moz-range-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  background: #f97316;
+  border: 3px solid #fff7ed;
+}

@@ -134,6 +134,7 @@ function buildLoopSamples(
   loopBeats: number,
   spb: number,
   soundForBeat: (index: number) => Float32Array | undefined,
+  gain: number,
 ): Float32Array {
   const totalSamples = Math.round(loopBeats * spb * SAMPLE_RATE);
   const out = new Float32Array(totalSamples);
@@ -145,6 +146,9 @@ function buildLoopSamples(
     if (len <= 0) continue;
     out.set(len === src.length ? src : src.subarray(0, len), start);
   }
+  // iOS ignores HTMLMediaElement.volume (it's read-only there, always 1), so
+  // volume is baked into the samples instead.
+  if (gain !== 1) for (let i = 0; i < out.length; i++) out[i] *= gain;
   return out;
 }
 
@@ -222,7 +226,6 @@ export class MetronomeEngine {
     el.loop = true;
     el.setAttribute("playsinline", "true");
     el.style.display = "none";
-    el.volume = this.volume;
     el.addEventListener("pause", () => {
       if (this.running) el.play().catch(() => {});
     });
@@ -269,8 +272,10 @@ export class MetronomeEngine {
   }
 
   setVolume(v: number) {
-    this.volume = Math.min(1, Math.max(0, v));
-    if (this.audioEl) this.audioEl.volume = this.volume;
+    const next = Math.min(1, Math.max(0, v));
+    if (next === this.volume) return;
+    this.volume = next;
+    this.scheduleRebuild();
   }
 
   setBpm(bpm: number) {
@@ -314,8 +319,13 @@ export class MetronomeEngine {
       MIN_LOOP_BEATS,
       Math.ceil(TARGET_LOOP_SECONDS / spb),
     );
-    return buildLoopSamples(loopBeats, spb, (i) =>
-      this.buffers.get(this.soundForBeat(i)),
+    // Squared so the slider feels roughly linear to the ear.
+    const gain = this.volume * this.volume;
+    return buildLoopSamples(
+      loopBeats,
+      spb,
+      (i) => this.buffers.get(this.soundForBeat(i)),
+      gain,
     );
   }
 

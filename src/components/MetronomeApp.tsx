@@ -113,7 +113,8 @@ export default function MetronomeApp() {
           max={MAX_BPM}
           value={bpm}
           onChange={(e) => setBpm(Number(e.target.value))}
-          className="mt-3 w-full accent-orange-500"
+          className="range-big mt-1 w-full"
+          style={{ "--pct": `${((bpm - MIN_BPM) / (MAX_BPM - MIN_BPM)) * 100}%` } as React.CSSProperties}
           aria-label="Atur BPM"
         />
 
@@ -202,7 +203,8 @@ export default function MetronomeApp() {
             step={0.01}
             value={volume}
             onChange={(e) => setVolume(Number(e.target.value))}
-            className="mt-2 w-full accent-orange-500"
+            className="range-big w-full"
+            style={{ "--pct": `${volume * 100}%` } as React.CSSProperties}
             aria-label="Atur volume"
           />
         </section>
