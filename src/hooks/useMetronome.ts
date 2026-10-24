@@ -18,6 +18,7 @@ interface StoredSettings {
   soundPack: SoundPackId;
   beatMode: BeatMode;
   volume: number;
+  mix: boolean;
 }
 
 function readStored(): Partial<StoredSettings> {
@@ -44,6 +45,9 @@ export function useMetronome() {
   );
   const [volume, setVolumeState] = useState<number>(
     () => readStored().volume ?? 1,
+  );
+  const [mix, setMixState] = useState<boolean>(
+    () => readStored().mix ?? false,
   );
   const [isRunning, setIsRunning] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
@@ -93,15 +97,19 @@ export function useMetronome() {
   }, [volume]);
 
   useEffect(() => {
+    engineRef.current?.setMix(mix);
+  }, [mix]);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ bpm, soundPack, beatMode, volume }),
+        JSON.stringify({ bpm, soundPack, beatMode, volume, mix }),
       );
     } catch {
       // localStorage unavailable (private mode etc.) — settings just won't persist.
     }
-  }, [bpm, soundPack, beatMode, volume]);
+  }, [bpm, soundPack, beatMode, volume, mix]);
 
   const start = useCallback(async () => {
     setError(null);
@@ -136,6 +144,8 @@ export function useMetronome() {
     setBeatMode: setBeatModeState,
     volume,
     setVolume: setVolumeState,
+    mix,
+    setMix: setMixState,
     isRunning,
     isStarting,
     error,
