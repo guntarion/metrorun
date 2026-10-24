@@ -212,7 +212,6 @@ export class MetronomeEngine {
   private soundPack: SoundPackId = "click";
   private beatMode: BeatMode = "same";
   private volume = 1;
-  private mix = false;
   private running = false;
 
   constructor(private options: EngineOptions = {}) {}
@@ -277,28 +276,6 @@ export class MetronomeEngine {
     if (next === this.volume) return;
     this.volume = next;
     this.scheduleRebuild();
-  }
-
-  /** Let the metronome play alongside other apps' audio (Spotify, YouTube).
-   * Uses the Audio Session API (Safari 16.4+; silently a no-op on older iOS,
-   * which keeps the default exclusive "playback" behaviour). "ambient" mixes
-   * but may be muted by the silent switch / not survive screen lock. */
-  setMix(mix: boolean) {
-    this.mix = mix;
-    this.applyAudioSessionType();
-  }
-
-  private applyAudioSessionType() {
-    if (typeof navigator === "undefined") return;
-    const session = (
-      navigator as unknown as { audioSession?: { type: string } }
-    ).audioSession;
-    if (!session) return;
-    try {
-      session.type = this.mix ? "ambient" : "auto";
-    } catch {
-      // Unsupported value on this browser version — keep the default.
-    }
   }
 
   setBpm(bpm: number) {
@@ -412,7 +389,6 @@ export class MetronomeEngine {
   async start() {
     if (this.running) return;
     try {
-      this.applyAudioSessionType();
       this.ensureAudioElement();
       await this.loadSounds();
       this.running = true;

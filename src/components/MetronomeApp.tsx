@@ -73,8 +73,6 @@ export default function MetronomeApp() {
     setBeatMode,
     volume,
     setVolume,
-    mix,
-    setMix,
     isRunning,
     isStarting,
     error,
@@ -195,24 +193,9 @@ export default function MetronomeApp() {
 
         {/* Volume */}
         <section className="mt-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-              Volume
-            </h2>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={mix}
-              onClick={() => setMix(!mix)}
-              className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-                mix
-                  ? "bg-orange-500 text-slate-950"
-                  : "bg-slate-800 text-slate-400"
-              }`}
-            >
-              Mix {mix ? "ON" : "OFF"}
-            </button>
-          </div>
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+            Volume
+          </h2>
           <input
             type="range"
             min={0}
