@@ -62,40 +62,6 @@ function RepeatButton({
   );
 }
 
-/** A beat indicator dot driven purely by CSS (no per-beat JS event exists
- * anymore — the actual audio loops natively, see metronome-engine.ts). A
- * negative animation-delay phase-shifts the same cycle so left/right can
- * alternate against each other while sharing one keyframe definition. */
-function BeatDot({
-  label,
-  running,
-  periodSeconds,
-  phaseSeconds,
-}: {
-  label: string;
-  running: boolean;
-  periodSeconds: number;
-  phaseSeconds: number;
-}) {
-  return (
-    <div
-      className={`flex h-14 w-14 items-center justify-center rounded-full border-2 text-sm font-semibold border-slate-700 text-slate-500 ${
-        running ? "beat-pulse" : ""
-      }`}
-      style={
-        running
-          ? {
-              animationDuration: `${periodSeconds}s`,
-              animationDelay: `-${phaseSeconds}s`,
-            }
-          : undefined
-      }
-    >
-      {label}
-    </div>
-  );
-}
-
 export default function MetronomeApp() {
   const {
     bpm,
@@ -111,62 +77,21 @@ export default function MetronomeApp() {
     isStarting,
     error,
     toggle,
-    loopInfo,
-    loopVersion,
   } = useMetronome();
-
-  // Drive the visual indicator from what's *actually audible* (the
-  // currently-playing loop's own bpm/mode), not the live UI state — bpm/mode
-  // changes are debounced and re-rendered before they become audible, so
-  // syncing to the live state would visibly drift from the real sound.
-  const visualBpm = loopInfo?.bpm ?? bpm;
-  const visualBeatMode = loopInfo?.beatMode ?? beatMode;
-  const isAlternating = visualBeatMode === "alternate";
-  const periodSeconds = 60 / visualBpm;
 
   return (
     <div className="flex min-h-dvh flex-col bg-slate-950 text-slate-100">
-      <div className="mx-auto flex w-full max-w-md flex-1 flex-col px-5 pt-[calc(env(safe-area-inset-top)+1.5rem)] pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
-        <header className="text-center">
-          <h1 className="text-2xl font-bold tracking-tight">Metrorun</h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Metronome pemandu pace lari
-          </p>
-        </header>
-
-        {/* Beat indicator — keyed by loopVersion so it fully remounts (a
-            clean CSS animation restart) exactly when a new loop becomes
-            audible, instead of warping mid-cycle on every settings change. */}
-        <div
-          key={loopVersion}
-          className="mt-6 flex items-center justify-center gap-6"
-        >
-          <BeatDot
-            label={isAlternating ? "KIRI" : "•"}
-            running={isRunning}
-            periodSeconds={periodSeconds}
-            phaseSeconds={0}
-          />
-          {isAlternating && (
-            <BeatDot
-              label="KANAN"
-              running={isRunning}
-              periodSeconds={periodSeconds}
-              phaseSeconds={periodSeconds / 2}
-            />
-          )}
-        </div>
-
+      <div className="mx-auto flex w-full max-w-md flex-1 flex-col px-5 pt-[calc(env(safe-area-inset-top)+0.75rem)] pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
         {/* BPM display + nudge */}
-        <div className="mt-8 flex items-center justify-center gap-4">
+        <div className="mt-1 flex items-center justify-center gap-4">
           <RepeatButton
             label="−"
             ariaLabel="Kurangi BPM"
             onTrigger={() => nudgeBpm(-1)}
-            className="h-16 w-16 bg-slate-800 text-slate-200 hover:bg-slate-700"
+            className="h-14 w-14 bg-slate-800 text-slate-200 hover:bg-slate-700"
           />
           <div className="w-40 text-center">
-            <div className="text-7xl font-bold tabular-nums tracking-tight">
+            <div className="text-6xl font-bold tabular-nums tracking-tight">
               {bpm}
             </div>
             <div className="mt-1 text-xs uppercase tracking-widest text-slate-500">
@@ -177,7 +102,7 @@ export default function MetronomeApp() {
             label="+"
             ariaLabel="Tambah BPM"
             onTrigger={() => nudgeBpm(1)}
-            className="h-16 w-16 bg-slate-800 text-slate-200 hover:bg-slate-700"
+            className="h-14 w-14 bg-slate-800 text-slate-200 hover:bg-slate-700"
           />
         </div>
 
@@ -188,18 +113,18 @@ export default function MetronomeApp() {
           max={MAX_BPM}
           value={bpm}
           onChange={(e) => setBpm(Number(e.target.value))}
-          className="mt-6 w-full accent-orange-500"
+          className="mt-3 w-full accent-orange-500"
           aria-label="Atur BPM"
         />
 
         {/* Presets */}
-        <div className="mt-4 flex flex-wrap justify-center gap-2">
+        <div className="mt-3 flex flex-wrap justify-center gap-2">
           {PRESETS.map((preset) => (
             <button
               key={preset}
               type="button"
               onClick={() => setBpm(preset)}
-              className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+              className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
                 bpm === preset
                   ? "bg-orange-500 text-slate-950"
                   : "bg-slate-800 text-slate-300 hover:bg-slate-700"
@@ -211,11 +136,11 @@ export default function MetronomeApp() {
         </div>
 
         {/* Sound pack */}
-        <section className="mt-8">
+        <section className="mt-4">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
             Suara ketukan
           </h2>
-          <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="mt-2 grid grid-cols-3 gap-2">
             {SOUND_PACK_IDS.map((id) => {
               const pack = SOUND_PACKS[id];
               const active = soundPack === id;
@@ -224,7 +149,7 @@ export default function MetronomeApp() {
                   key={id}
                   type="button"
                   onClick={() => setSoundPack(id)}
-                  className={`rounded-xl border px-2 py-3 text-center transition-colors ${
+                  className={`rounded-xl border px-2 py-2.5 text-center transition-colors ${
                     active
                       ? "border-orange-500 bg-orange-500/10 text-orange-300"
                       : "border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700"
@@ -238,11 +163,11 @@ export default function MetronomeApp() {
         </section>
 
         {/* Beat mode */}
-        <section className="mt-5">
+        <section className="mt-3">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
             Mode ketukan
           </h2>
-          <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-900 p-1">
+          <div className="mt-2 grid grid-cols-2 gap-2 rounded-xl bg-slate-900 p-1">
             {(
               [
                 ["same", "Sama"],
@@ -266,7 +191,7 @@ export default function MetronomeApp() {
         </section>
 
         {/* Volume */}
-        <section className="mt-5">
+        <section className="mt-3">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
             Volume
           </h2>
@@ -277,7 +202,7 @@ export default function MetronomeApp() {
             step={0.01}
             value={volume}
             onChange={(e) => setVolume(Number(e.target.value))}
-            className="mt-3 w-full accent-orange-500"
+            className="mt-2 w-full accent-orange-500"
             aria-label="Atur volume"
           />
         </section>
@@ -295,7 +220,7 @@ export default function MetronomeApp() {
           type="button"
           onClick={toggle}
           disabled={isStarting}
-          className={`mt-6 w-full rounded-2xl py-5 text-lg font-bold tracking-wide transition-colors disabled:opacity-60 ${
+          className={`mt-4 w-full rounded-2xl py-4 text-lg font-bold tracking-wide transition-colors disabled:opacity-60 ${
             isRunning
               ? "bg-red-600 text-white active:bg-red-700"
               : "bg-orange-500 text-slate-950 active:bg-orange-400"
