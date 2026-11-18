@@ -37,7 +37,7 @@ body {
   border-radius: 9999px;
   background: linear-gradient(
     to right,
-    #f97316 var(--pct, 50%),
+    #86efac var(--pct, 50%),
     #334155 var(--pct, 50%)
   );
 }
@@ -46,7 +46,7 @@ body {
   border-radius: 9999px;
   background: linear-gradient(
     to right,
-    #f97316 var(--pct, 50%),
+    #86efac var(--pct, 50%),
     #334155 var(--pct, 50%)
   );
 }
@@ -57,13 +57,13 @@ body {
   height: 34px;
   margin-top: -12px;
   border-radius: 9999px;
-  background: #f97316;
-  border: 3px solid #fff7ed;
+  background: #86efac;
+  border: 3px solid #f0fdf4;
 }
 .range-big::-moz-range-thumb {
   width: 28px;
   height: 28px;
   border-radius: 9999px;
-  background: #f97316;
-  border: 3px solid #fff7ed;
+  background: #86efac;
+  border: 3px solid #f0fdf4;
 }

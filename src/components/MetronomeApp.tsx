@@ -10,7 +10,7 @@ import {
   SoundPackId,
 } from "@/lib/metronome-engine";
 
-const PRESETS = [152, 156, 160, 165, 170];
+const PRESETS = [152, 156, 160, 165, 170, 175, 180];
 const SOUND_PACK_IDS = Object.keys(SOUND_PACKS) as SoundPackId[];
 
 /** A press-and-hold repeat button, for fast BPM nudging on the fly. */
@@ -88,7 +88,7 @@ export default function MetronomeApp() {
             label="−"
             ariaLabel="Kurangi BPM"
             onTrigger={() => nudgeBpm(-1)}
-            className="h-14 w-14 bg-slate-800 text-slate-200 hover:bg-slate-700"
+            className="h-14 w-24 bg-slate-800 text-slate-200 hover:bg-slate-700"
           />
           <div className="w-40 text-center">
             <div className="text-6xl font-bold tabular-nums tracking-tight">
@@ -102,7 +102,7 @@ export default function MetronomeApp() {
             label="+"
             ariaLabel="Tambah BPM"
             onTrigger={() => nudgeBpm(1)}
-            className="h-14 w-14 bg-slate-800 text-slate-200 hover:bg-slate-700"
+            className="h-14 w-24 bg-slate-800 text-slate-200 hover:bg-slate-700"
           />
         </div>
 
@@ -119,15 +119,15 @@ export default function MetronomeApp() {
         />
 
         {/* Presets */}
-        <div className="mt-3 flex flex-wrap justify-center gap-2">
-          {PRESETS.map((preset) => (
+        <div className="mt-3 grid grid-cols-12 gap-2">
+          {PRESETS.map((preset, i) => (
             <button
               key={preset}
               type="button"
               onClick={() => setBpm(preset)}
-              className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+              className={`${i < 4 ? "col-span-3" : "col-span-4"} rounded-full py-2 text-sm font-medium transition-colors ${
                 bpm === preset
-                  ? "bg-orange-500 text-slate-950"
+                  ? "bg-green-300 text-slate-950"
                   : "bg-slate-800 text-slate-300 hover:bg-slate-700"
               }`}
             >
@@ -152,7 +152,7 @@ export default function MetronomeApp() {
                   onClick={() => setSoundPack(id)}
                   className={`rounded-xl border px-2 py-2.5 text-center transition-colors ${
                     active
-                      ? "border-orange-500 bg-orange-500/10 text-orange-300"
+                      ? "border-green-400 bg-green-400/10 text-green-300"
                       : "border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700"
                   }`}
                 >
@@ -181,7 +181,7 @@ export default function MetronomeApp() {
                 onClick={() => setBeatMode(mode)}
                 className={`rounded-lg py-2 text-sm font-medium transition-colors ${
                   beatMode === mode
-                    ? "bg-orange-500 text-slate-950"
+                    ? "bg-green-300 text-slate-950"
                     : "text-slate-300 hover:bg-slate-800"
                 }`}
               >
@@ -222,10 +222,10 @@ export default function MetronomeApp() {
           type="button"
           onClick={toggle}
           disabled={isStarting}
-          className={`mt-4 w-full rounded-2xl py-4 text-lg font-bold tracking-wide transition-colors disabled:opacity-60 ${
+          className={`mt-4 w-full rounded-2xl py-5 text-xl font-bold tracking-wide transition-colors disabled:opacity-60 ${
             isRunning
               ? "bg-red-600 text-white active:bg-red-700"
-              : "bg-orange-500 text-slate-950 active:bg-orange-400"
+              : "bg-green-300 text-slate-950 active:bg-green-400"
           }`}
         >
           {isStarting ? "Memuat..." : isRunning ? "Berhenti" : "Mulai"}
